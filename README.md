@@ -1,1 +1,2 @@
-https://ntthng.github.io/Boss-Timing/
+https://ntthng.github.io/boss/
+
