@@ -152,7 +152,7 @@
       return new Date(date).toLocaleString("vi-VN", { hour12: false });
     }
 
-    let allBosses = {}, bossRespawnMap = {};
+    let allBosses = {}, bossRespawnMap = {}, bossTimes = {};
 
     function renderBossList(bosses) {
       const container = document.getElementById("bossList");
@@ -162,8 +162,8 @@
       const sortChecked = document.getElementById("sortByRespawn").checked;
       if (sortChecked) {
         entries.sort(([, a], [, b]) => {
-          const timeA = bossRespawnMap[a?.name] instanceof Date ? bossRespawnMap[a.name].getTime() : Infinity;
-          const timeB = bossRespawnMap[b?.name] instanceof Date ? bossRespawnMap[b.name].getTime() : Infinity;
+          const timeA = bossRespawnMap[a.name]?.getTime() || Infinity;
+          const timeB = bossRespawnMap[b.name]?.getTime() || Infinity;
           return timeA - timeB;
         });
       }
@@ -208,8 +208,8 @@
         let nextRespawn = null;
         const logs = [];
 
-        inputEl.addEventListener("change", () => {
-          killedTime = new Date(inputEl.value);
+        function updateTimesAndRender() {
+          if (!killedTime) return;
           const offsetMs = killedOffsetMap(boss.level) * 60 * 1000;
           const respawnMs = boss.respawn * 60 * 60 * 1000;
           nextRespawn = new Date(killedTime.getTime() + respawnMs);
@@ -217,7 +217,13 @@
           timeEl.innerText = `Next Respawn: ${formatTime(nextRespawn)}`;
           logs.unshift(`• Kill: ${formatTime(killedTime)}\n  → Respawn: ${formatTime(nextRespawn)}\n• [RAW] ${nextRespawn.toISOString()}`);
           logEl.textContent = logs.join("\n\n");
+          db.ref(`bossTimes/${id}`).set({ killedTime: killedTime.toISOString() });
           if (document.getElementById("sortByRespawn").checked) sortAndRender();
+        }
+
+        inputEl.addEventListener("change", () => {
+          killedTime = new Date(inputEl.value);
+          updateTimesAndRender();
         });
 
         toggleBtn.onclick = () => {
@@ -233,14 +239,15 @@
 
           if (now.getTime() >= nextRespawn.getTime() + offsetMs) {
             killedTime = new Date(nextRespawn.getTime() + offsetMs);
-            nextRespawn = new Date(killedTime.getTime() + respawnMs);
-            bossRespawnMap[boss.name] = nextRespawn;
-            timeEl.innerText = `Next Respawn: ${formatTime(nextRespawn)}`;
-            logs.unshift(`• Auto Kill: ${formatTime(killedTime)}\n  → Respawn: ${formatTime(nextRespawn)}\n• [RAW] ${nextRespawn.toISOString()}`);
-            logEl.textContent = logs.join("\n\n");
-            if (document.getElementById("sortByRespawn").checked) sortAndRender();
+            updateTimesAndRender();
           }
         }, 1000);
+
+        if (bossTimes[id]?.killedTime) {
+          killedTime = new Date(bossTimes[id].killedTime);
+          inputEl.value = new Date(killedTime.getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+          updateTimesAndRender();
+        }
       });
     }
 
@@ -252,7 +259,10 @@
       const data = snapshot.val();
       if (data) {
         allBosses = data;
-        renderBossList(data);
+        db.ref("bossTimes").once("value").then(timeSnap => {
+          bossTimes = timeSnap.val() || {};
+          renderBossList(data);
+        });
       }
     });
 
