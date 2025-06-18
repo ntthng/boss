@@ -147,20 +147,22 @@
     const db = firebase.database();
 
     const killedOffsetMap = level => level >= 70 ? 30 : level >= 60 ? 20 : level >= 50 ? 10 : 5;
-
     function formatTime(date) {
       return new Date(date).toLocaleString("vi-VN", { hour12: false });
     }
 
-    let allBosses = {}, bossRespawnMap = {}, bossTimes = {};
+    let allBosses = {}, bossRespawnMap = {};
+    let savedData = JSON.parse(localStorage.getItem("bossData") || "{}");
+
+    function saveToLocalStorage() {
+      localStorage.setItem("bossData", JSON.stringify(savedData));
+    }
 
     function renderBossList(bosses) {
       const container = document.getElementById("bossList");
       container.innerHTML = "";
-
       const entries = Object.entries(bosses);
-      const sortChecked = document.getElementById("sortByRespawn").checked;
-      if (sortChecked) {
+      if (document.getElementById("sortByRespawn").checked) {
         entries.sort(([, a], [, b]) => {
           const timeA = bossRespawnMap[a.name]?.getTime() || Infinity;
           const timeB = bossRespawnMap[b.name]?.getTime() || Infinity;
@@ -179,7 +181,6 @@
         const timeId = `time-${id}`;
         const logId = `log-${id}`;
         const toggleId = `toggle-${id}`;
-        const copyId = `copy-${id}`;
 
         card.innerHTML = `
           <div class="boss-title">${boss.name}</div>
@@ -196,7 +197,6 @@
           <button class="copy-log" onclick="copyLog('${id}')">COPY LOG</button>
           <div class="log-box" id="${logId}"></div>
         `;
-
         container.appendChild(card);
 
         const inputEl = document.getElementById(inputId);
@@ -206,10 +206,20 @@
 
         let killedTime = null;
         let nextRespawn = null;
-        const logs = [];
+        const logs = savedData[id]?.logs || [];
 
-        function updateTimesAndRender() {
-          if (!killedTime) return;
+        if (savedData[id]?.killedTime) {
+          killedTime = new Date(savedData[id].killedTime);
+          const respawnMs = boss.respawn * 60 * 60 * 1000;
+          nextRespawn = new Date(killedTime.getTime() + respawnMs);
+          bossRespawnMap[boss.name] = nextRespawn;
+          timeEl.innerText = `Next Respawn: ${formatTime(nextRespawn)}`;
+          inputEl.value = killedTime.toISOString().slice(0,16);
+          logEl.textContent = logs.join("\n\n");
+        }
+
+        inputEl.addEventListener("change", () => {
+          killedTime = new Date(inputEl.value);
           const offsetMs = killedOffsetMap(boss.level) * 60 * 1000;
           const respawnMs = boss.respawn * 60 * 60 * 1000;
           nextRespawn = new Date(killedTime.getTime() + respawnMs);
@@ -217,13 +227,9 @@
           timeEl.innerText = `Next Respawn: ${formatTime(nextRespawn)}`;
           logs.unshift(`• Kill: ${formatTime(killedTime)}\n  → Respawn: ${formatTime(nextRespawn)}\n• [RAW] ${nextRespawn.toISOString()}`);
           logEl.textContent = logs.join("\n\n");
-          db.ref(`bossTimes/${id}`).set({ killedTime: killedTime.toISOString() });
+          savedData[id] = { killedTime: killedTime.toISOString(), logs };
+          saveToLocalStorage();
           if (document.getElementById("sortByRespawn").checked) sortAndRender();
-        }
-
-        inputEl.addEventListener("change", () => {
-          killedTime = new Date(inputEl.value);
-          updateTimesAndRender();
         });
 
         toggleBtn.onclick = () => {
@@ -236,18 +242,18 @@
           const now = new Date();
           const offsetMs = killedOffsetMap(boss.level) * 60 * 1000;
           const respawnMs = boss.respawn * 60 * 60 * 1000;
-
           if (now.getTime() >= nextRespawn.getTime() + offsetMs) {
             killedTime = new Date(nextRespawn.getTime() + offsetMs);
-            updateTimesAndRender();
+            nextRespawn = new Date(killedTime.getTime() + respawnMs);
+            bossRespawnMap[boss.name] = nextRespawn;
+            timeEl.innerText = `Next Respawn: ${formatTime(nextRespawn)}`;
+            logs.unshift(`• Auto Kill: ${formatTime(killedTime)}\n  → Respawn: ${formatTime(nextRespawn)}\n• [RAW] ${nextRespawn.toISOString()}`);
+            logEl.textContent = logs.join("\n\n");
+            savedData[id] = { killedTime: killedTime.toISOString(), logs };
+            saveToLocalStorage();
+            if (document.getElementById("sortByRespawn").checked) sortAndRender();
           }
         }, 1000);
-
-        if (bossTimes[id]?.killedTime) {
-          killedTime = new Date(bossTimes[id].killedTime);
-          inputEl.value = new Date(killedTime.getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-          updateTimesAndRender();
-        }
       });
     }
 
@@ -259,21 +265,16 @@
       const data = snapshot.val();
       if (data) {
         allBosses = data;
-        db.ref("bossTimes").once("value").then(timeSnap => {
-          bossTimes = timeSnap.val() || {};
-          renderBossList(data);
-        });
+        renderBossList(data);
       }
     });
 
     document.getElementById("searchInput").addEventListener("input", e => {
       const keyword = e.target.value.trim().toLowerCase();
-      const bossCards = document.querySelectorAll(".boss-card");
-      bossCards.forEach(card => {
+      document.querySelectorAll(".boss-card").forEach(card => {
         const name = card.getAttribute("data-name").toLowerCase();
         const location = card.getAttribute("data-location").toLowerCase();
         const zone = card.getAttribute("data-zone").toLowerCase();
-
         card.style.display = name.includes(keyword) || location.includes(keyword) || zone.includes(keyword) ? "block" : "none";
       });
     });
@@ -287,17 +288,14 @@
       const boss = allBosses[id];
       const logBox = document.getElementById(`log-${id}`);
       const rawLine = (logBox.textContent.trim().split("\n").find(l => l.startsWith("• [RAW]")) || "").replace("• [RAW] ", "");
-
       if (!rawLine) return alert("Không lấy được thời gian respawn!");
       const date = new Date(rawLine);
       if (isNaN(date.getTime())) return alert("Thời gian không hợp lệ!");
-
       const hour = date.getHours().toString().padStart(2, "0");
       const minute = date.getMinutes().toString().padStart(2, "0");
       const day = date.getDate();
       const month = date.getMonth() + 1;
       const result = `${boss.name} | ${boss.location} | ${hour}:${minute} ${day}/${month}`;
-
       navigator.clipboard.writeText(result).then(() => alert("✅ Đã sao chép log!"));
     }
   </script></body>
